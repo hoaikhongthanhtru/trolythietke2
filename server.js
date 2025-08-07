@@ -19,33 +19,46 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Route API proxy để gọi đến Stability AI một cách an toàn với cơ chế luân chuyển key
+// (Phiên bản hoàn chỉnh, kết hợp luân chuyển key và ghi log JSON)
 app.post('/api/generate-image', async (req, res) => {
     const { prompt } = req.body;
 
     if (!prompt) {
+        // Ghi log lỗi nếu không có prompt
+        const logData = { level: "warn", message: "Request received without a prompt." };
+        console.warn(JSON.stringify(logData));
         return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    // Lấy danh sách API key từ biến môi trường.
-    // Các key được phân tách bằng dấu phẩy, ví dụ: "key1,key2,key3"
+    // 1. Lấy danh sách API key từ biến môi trường (giống mã nguồn gốc)
     const apiKeysString = process.env.STABILITY_API_KEYS;
 
     if (!apiKeysString) {
-        console.error('STABILITY_API_KEYS not found in environment variables.');
+        // Ghi log lỗi và trả về phản hồi nếu không cấu hình key
+        const logData = {
+            level: "error",
+            message: "STABILITY_API_KEYS not found in environment variables. Server is not configured."
+        };
+        console.error(JSON.stringify(logData));
         return res.status(500).json({ error: 'API keys are not configured on the server.' });
     }
 
-    // Tách chuỗi thành một mảng các key và loại bỏ khoảng trắng thừa
+    // Tách chuỗi thành một mảng các key
     const apiKeys = apiKeysString.split(',').map(key => key.trim());
 
     const engineId = 'stable-diffusion-xl-1024-v1-0';
     const apiHost = 'https://api.stability.ai';
 
-    // Vòng lặp để thử từng key
+    // 2. Vòng lặp để luân chuyển và thử từng key (giống mã nguồn gốc)
     for (const apiKey of apiKeys) {
-        console.log(`Trying API key ending with ...${apiKey.slice(-4)}`);
+        const keyIdentifier = `...${apiKey.slice(-4)}`; // Dùng để nhận diện key trong log
         try {
+            console.log(JSON.stringify({ 
+                level: "info", 
+                message: `Trying API key`,
+                key: keyIdentifier
+            }));
+
             const response = await fetch(`${apiHost}/v1/generation/${engineId}/text-to-image`, {
                 method: 'POST',
                 headers: {
@@ -63,33 +76,58 @@ app.post('/api/generate-image', async (req, res) => {
                 }),
             });
 
-            // Nếu key hợp lệ và yêu cầu thành công (status 200 OK)
+            // 3. Nếu key hợp lệ và yêu cầu thành công (status 200 OK)
             if (response.ok) {
-                console.log(`Success with API key ...${apiKey.slice(-4)}`);
+                const logData = { level: "info", message: "Image generation successful", key: keyIdentifier };
+                console.log(JSON.stringify(logData));
+                
                 const responseJSON = await response.json();
                 return res.json(responseJSON); // Trả kết quả về cho client và kết thúc
             }
 
-            // Nếu key không hợp lệ hoặc hết tín dụng (401 Unauthorized)
-            // Stability AI thường dùng mã 401 cho các trường hợp này.
+            // 4. Nếu key không hợp lệ hoặc hết tín dụng (401 Unauthorized)
             if (response.status === 401) {
-                console.warn(`API key ...${apiKey.slice(-4)} failed (Unauthorized/Out of credits). Trying next key.`);
-                continue; // Bỏ qua key này và thử key tiếp theo trong vòng lặp
+                const logData = {
+                    level: "warn",
+                    message: "API key failed (Unauthorized/Out of credits). Trying next key.",
+                    key: keyIdentifier,
+                    statusCode: 401
+                };
+                console.warn(JSON.stringify(logData));
+                continue; // Bỏ qua key này và thử key tiếp theo
             }
-            
-            // Đối với các lỗi khác (ví dụ: lỗi server 5xx từ Stability), chúng ta dừng lại và báo lỗi
+
+            // 5. Đối với các lỗi khác, ghi log chi tiết và thử key tiếp theo
             const errorText = await response.text();
-            throw new Error(`Non-recoverable response from Stability AI: ${response.status} - ${errorText}`);
+            const logData = {
+                level: "error",
+                message: "Non-recoverable response from Stability AI with current key.",
+                key: keyIdentifier,
+                statusCode: response.status,
+                details: errorText
+            };
+            console.error(JSON.stringify(logData));
+            // Không `throw` lỗi ở đây để vòng lặp có thể tiếp tục với key khác
 
         } catch (error) {
-            // Bắt các lỗi mạng hoặc lỗi được ném ra ở trên
-            console.error(`Error with API key ...${apiKey.slice(-4)}:`, error.message);
-            // Nếu đây là key cuối cùng, vòng lặp sẽ kết thúc và lỗi cuối cùng sẽ được trả về bên dưới.
+            // Bắt các lỗi mạng hoặc lỗi hệ thống
+            const logData = {
+                level: "error",
+                message: "A network or system error occurred while trying an API key.",
+                key: keyIdentifier,
+                errorDetails: error.message
+            };
+            console.error(JSON.stringify(logData));
+            // Tiếp tục thử key tiếp theo
         }
     }
 
-    // Nếu vòng lặp kết thúc mà không có key nào thành công
-    console.error('All API keys failed.');
+    // 6. Nếu vòng lặp kết thúc mà không có key nào thành công
+    const finalErrorLog = {
+        level: "error",
+        message: "All available API keys failed. Unable to generate image."
+    };
+    console.error(JSON.stringify(finalErrorLog));
     res.status(500).json({ error: 'Failed to generate image. All available API keys failed.' });
 });
 
